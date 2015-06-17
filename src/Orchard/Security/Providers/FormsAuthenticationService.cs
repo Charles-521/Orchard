@@ -7,20 +7,21 @@ using Orchard.ContentManagement;
 using Orchard.Mvc;
 using Orchard.Mvc.Extensions;
 using Orchard.Services;
+using Orchard.Utility.Extensions;
 
 namespace Orchard.Security.Providers {
     public class FormsAuthenticationService : IAuthenticationService {
         private readonly ShellSettings _settings;
         private readonly IClock _clock;
-        private readonly IContentManager _contentManager;
+        private readonly IMembershipService _membershipService;
         private readonly IHttpContextAccessor _httpContextAccessor;
         private IUser _signedInUser;
         private bool _isAuthenticated;
 
-        public FormsAuthenticationService(ShellSettings settings, IClock clock, IContentManager contentManager, IHttpContextAccessor httpContextAccessor) {
+        public FormsAuthenticationService(ShellSettings settings, IClock clock, IMembershipService membershipService, IHttpContextAccessor httpContextAccessor) {
             _settings = settings;
             _clock = clock;
-            _contentManager = contentManager;
+            _membershipService = membershipService;
             _httpContextAccessor = httpContextAccessor;
 
             Logger = NullLogger.Instance;
@@ -36,7 +37,7 @@ namespace Orchard.Security.Providers {
             var now = _clock.UtcNow.ToLocalTime();
             
             // the cookie user data is {userId};{tenant}
-            var userData = String.Concat(Convert.ToString(user.Id), ";", _settings.Name); 
+            var userData = String.Concat(Convert.ToString(user.UserName).ToBase64(), ";", _settings.Name); 
 
             var ticket = new FormsAuthenticationTicket(
                 1 /*version*/,
@@ -110,28 +111,29 @@ namespace Orchard.Security.Providers {
             var formsIdentity = (FormsIdentity)httpContext.User.Identity;
             var userData = formsIdentity.Ticket.UserData ?? "";
 
-            // the cookie user data is {userId};{tenant}
+            // the cookie user data is {userName};{tenant}
             var userDataSegments = userData.Split(';');
             
             if (userDataSegments.Length < 2) {
                 return null;
             }
 
-            var userDataId = userDataSegments[0];
+            var userDataName = userDataSegments[0];
             var userDataTenant = userDataSegments[1];
+
+            try {
+                userDataName = userDataName.FromBase64();
+            }
+            catch {
+                return null;
+            }
 
             if (!String.Equals(userDataTenant, _settings.Name, StringComparison.Ordinal)) {
                 return null;
             }
 
-            int userId;
-            if (!int.TryParse(userDataId, out userId)) {
-                Logger.Error("User id not a parsable integer");
-                return null;
-            }
-
             _isAuthenticated = true;
-            return _signedInUser = _contentManager.Get(userId).As<IUser>();
+            return _signedInUser = _membershipService.GetUser(userDataName);
         }
 
         private string GetCookiePath(HttpContextBase httpContext) {
